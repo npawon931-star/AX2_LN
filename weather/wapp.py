@@ -13,15 +13,10 @@ from dotenv import load_dotenv, find_dotenv
 import pandas as pd
 import altair as alt
 
-# 1. 로컬 환경(.env) 로드 시도 (실패해도 에러 나지 않도록 예외 처리)
-try:
-    load_dotenv(find_dotenv())
-except Exception:
-    pass
-
-# 2. 로컬(.env) 또는 Streamlit Cloud(st.secrets)에서 안전하게 API 키 가져오기
-API_KEY = os.getenv("OPENWEATHER_API_KEY") or st.secrets.get("OPENWEATHER_API_KEY", "")
-EXCHANGE_API_KEY = os.getenv("EXCHANGE_API_KEY") or st.secrets.get("EXCHANGE_API_KEY", "")
+# 상위 폴더의 .env 파일 로드
+load_dotenv(find_dotenv())
+API_KEY = os.getenv("OPENWEATHER_API_KEY")
+EXCHANGE_API_KEY = os.getenv("EXCHANGE_API_KEY")
 
 # 페이지 설정 (와이드 모드)
 st.set_page_config(
