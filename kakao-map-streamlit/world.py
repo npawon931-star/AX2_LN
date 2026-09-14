@@ -13,17 +13,17 @@ from babel.numbers import get_territory_currencies, get_currency_name
 
 # Instant, offline-capable starting points; other cities use live geocoding.
 CITY_PRESETS = [
-    dict(name="??", country="????", country_code="KR", latitude=37.5665, longitude=126.978, timezone="Asia/Seoul"),
-    dict(name="??", country="??", country_code="JP", latitude=35.6762, longitude=139.6503, timezone="Asia/Tokyo"),
-    dict(name="??", country="???", country_code="FR", latitude=48.8566, longitude=2.3522, timezone="Europe/Paris"),
-    dict(name="??", country="??", country_code="GB", latitude=51.5074, longitude=-0.1278, timezone="Europe/London"),
-    dict(name="??", country="??", country_code="US", latitude=40.7128, longitude=-74.006, timezone="America/New_York"),
-    dict(name="????", country="???", country_code="BR", latitude=-23.5505, longitude=-46.6333, timezone="America/Sao_Paulo"),
+    dict(name="서울", country="대한민국", country_code="KR", latitude=37.5665, longitude=126.978, timezone="Asia/Seoul"),
+    dict(name="도쿄", country="일본", country_code="JP", latitude=35.6762, longitude=139.6503, timezone="Asia/Tokyo"),
+    dict(name="파리", country="프랑스", country_code="FR", latitude=48.8566, longitude=2.3522, timezone="Europe/Paris"),
+    dict(name="런던", country="영국", country_code="GB", latitude=51.5074, longitude=-0.1278, timezone="Europe/London"),
+    dict(name="뉴욕", country="미국", country_code="US", latitude=40.7128, longitude=-74.006, timezone="America/New_York"),
+    dict(name="상파울로", country="브라질", country_code="BR", latitude=-23.5505, longitude=-46.6333, timezone="America/Sao_Paulo"),
 ]
-ALIASES = dict(zip(["seoul", "tokyo", "paris", "london", "new york", "sao paulo", "s?o paulo"],
+ALIASES = dict(zip(["seoul", "tokyo", "paris", "london", "new york", "sao paulo", "são paulo"],
                    [0, 1, 2, 3, 4, 5, 5]))
-CATEGORIES = {"??": ("amenity", "cafe"), "??": ("amenity", "restaurant"),
-              "???": ("shop", "convenience"), "??": ("amenity", "pharmacy")}
+CATEGORIES = {"카페": ("amenity", "cafe"), "맛집": ("amenity", "restaurant"),
+              "편의점": ("shop", "convenience"), "약국": ("amenity", "pharmacy")}
 HEADERS = {"User-Agent": "NearbyCityExplorer/1.0 (Streamlit travel dashboard)"}
 
 
@@ -32,7 +32,7 @@ def city_key(city):
 
 
 def city_label(city):
-    return " ? ".join(dict.fromkeys(x for x in [city["name"], city.get("admin1"), city.get("country")] if x))
+    return " · ".join(dict.fromkeys(x for x in [city["name"], city.get("admin1"), city.get("country")] if x))
 
 
 def local_time(city):
@@ -66,6 +66,8 @@ def search_cities(query):
     presets = [dict(c) for c in CITY_PRESETS if c["name"] == query]
     if query.casefold() in ALIASES:
         presets = [dict(CITY_PRESETS[ALIASES[query.casefold()]])]
+    if presets:
+        return presets
     response = requests.get("https://geocoding-api.open-meteo.com/v1/search",
                             params={"name": query, "count": 15, "language": "ko"},
                             headers=HEADERS, timeout=10)
@@ -99,7 +101,7 @@ def open_places(lat, lon, radius, category):
     response.raise_for_status()
     payload = response.json()
     if payload.get("remark"):
-        raise ValueError("?? ?? ??? ???????. ??? ?? ?? ??? ???.")
+        raise ValueError("장소 서버가 혼잡합니다. 잠시 후 다시 시도해 주세요.")
     places = []
     for item in payload.get("elements", []):
         tags = item.get("tags", {})
@@ -111,8 +113,8 @@ def open_places(lat, lon, radius, category):
             continue
         address = " ".join(tags.get(k, "") for k in ["addr:city", "addr:street", "addr:housenumber"]).strip()
         places.append(dict(id=f"osm-{item['type']}-{item['id']}", x=center["lon"], y=center["lat"],
-                           place_name=tags.get("name:ko") or tags.get("name", "?? ?? ??"),
-                           address_name=address or "?? ??? ? ???? ?? ??",
+                           place_name=tags.get("name:ko") or tags.get("name", "이름 없는 장소"),
+                           address_name=address or "주소 정보 없음 · 지도에서 위치 확인",
                            category_name=category, distance=str(distance),
                            phone=tags.get("phone") or tags.get("contact:phone", ""),
                            opening_hours=tags.get("opening_hours", ""),
@@ -122,18 +124,18 @@ def open_places(lat, lon, radius, category):
 
 
 def place_card(place, index=1):
-    name = escape(place.get("place_name", "??"))
-    address = escape(place.get("road_address_name") or place.get("address_name") or "?? ???")
+    name = escape(place.get("place_name", "장소"))
+    address = escape(place.get("road_address_name") or place.get("address_name") or "주소 정보 없음")
     category = escape(place.get("category_name", "").split(" > ")[-1])
     distance = str(place.get("distance", ""))
     distance = f"{int(distance):,} m" if distance.isdigit() else ""
     phone = escape(place.get("phone", ""))
     hours = escape(place.get("opening_hours", ""))
     url = escape(safe_url(place.get("place_url", "")), quote=True)
-    return (f'<article class="result"><div class="card-heading"><strong>{index:02d} ? {name}</strong>'
+    return (f'<article class="result"><div class="card-heading"><strong>{index:02d} · {name}</strong>'
             f'<span class="pill">{distance}</span></div><p>{category}<br>{address}'
-            + (f"<br>{phone}" if phone else "") + (f"<br>?? ????: {hours}" if hours else "")
-            + f'</p><a href="{url}" target="_blank" rel="noopener noreferrer">???? ??? ?? ?</a></article>')
+            + (f"<br>{phone}" if phone else "") + (f"<br>등록된 영업시간: {hours}" if hours else "")
+            + f'</p><a href="{url}" target="_blank" rel="noopener noreferrer">지도에서 자세히 보기 ↗</a></article>')
 
 
 @st.cache_data(ttl=600, show_spinner=False)

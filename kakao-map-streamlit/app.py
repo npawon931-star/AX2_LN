@@ -11,7 +11,7 @@ import requests
 import streamlit as st
 from dotenv import load_dotenv
 from streamlit_folium import st_folium
-from streamlit_js_eval import get_geolocation
+from world import CITY_PRESETS, search_cities, city_label, city_key, currency_codes, currency_name, open_places, place_card, safe_url
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -23,7 +23,7 @@ OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 EXCHANGE_API_KEY = os.getenv("EXCHANGE_API_KEY", "").strip()
 DEFAULT_LOCATION = {"lat": 37.5665, "lon": 126.9780}  # 서울시청
 
-st.set_page_config(page_title="내 주변 카카오 지도 검색", page_icon="📍", layout="wide")
+st.set_page_config(page_title="NEARBY · 세계 도시 여행", page_icon="🌍", layout="wide")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -90,17 +90,17 @@ def make_map(latitude: float, longitude: float, places: list[dict]) -> folium.Ma
     map_view = folium.Map(location=[latitude, longitude], zoom_start=15, control_scale=True)
     folium.Marker(
         [latitude, longitude],
-        tooltip="내 위치",
-        popup="현재 위치",
+        tooltip="도시 중심",
+        popup="선택한 도시의 중심 위치",
         icon=folium.Icon(color="red", icon="user"),
     ).add_to(map_view)
 
     for place in places:
         place_lat, place_lon = float(place["y"]), float(place["x"])
-        name = place.get("place_name", "장소")
-        address = place.get("road_address_name") or place.get("address_name", "")
+        name = escape(place.get("place_name", "장소"))
+        address = escape(place.get("road_address_name") or place.get("address_name", ""))
         popup = folium.Popup(
-            f'<b>{name}</b><br>{address}<br><a href="{place.get("place_url", "#")}" target="_blank">카카오맵에서 보기</a>',
+            f'<b>{name}</b><br>{address}<br><a href="{escape(safe_url(place.get("place_url", "#")), quote=True)}" target="_blank" rel="noopener noreferrer">지도에서 보기</a>',
             max_width=320,
         )
         folium.Marker(
@@ -174,6 +174,17 @@ def render_exchange_rates() -> None:
         st.warning(str(exc))
         return
     rates = payload["rates"]
+    local_codes = currency_codes(st.session_state.selected_city)
+    st.markdown(f"**{escape(city_label(st.session_state.selected_city))} · 현지 환율**")
+    for code in local_codes:
+        rate = rates.get(code)
+        if not isinstance(rate, (int, float)) or isinstance(rate, bool) or not math.isfinite(rate) or rate <= 0:
+            st.info(f"{code} 환율은 현재 제공되지 않습니다.")
+            continue
+        unit = 100 if code == "JPY" else 1
+        st.metric(f"{currency_name(code)} · {unit} {code}", f"{rates['KRW'] / rate * unit:,.2f} 원")
+    if not local_codes:
+        st.info("이 지역의 현지 통화 정보가 없습니다.")
     icons = {"USD": "🗽", "EUR": "🏛️", "JPY": "🌸", "CNY": "🐼",
              "GBP": "🫖", "CHF": "🏔️", "CAD": "🍁", "AUD": "🦘", "KRW": "🇰🇷"}
     cards = []
@@ -189,11 +200,18 @@ def render_exchange_rates() -> None:
     st.markdown('<div class="exchange-grid">' + ''.join(cards) + '</div>', unsafe_allow_html=True)
     st.caption(f"제공사 갱신: {payload['updated']} (한국 시간) · 조회 결과는 1시간 동안 캐시됩니다.")
     with st.expander("🧮 환율 계산기"):
-        labels = {"KRW": "대한민국 원", **CURRENCIES}
+        labels = {"KRW": "대한민국 원", **CURRENCIES, **{code: currency_name(code) for code in local_codes if code in rates}}
+        for code in labels:
+            icons.setdefault(code, "💱")
+        selection = city_key(st.session_state.selected_city)
+        if st.session_state.get("exchange_city") != selection:
+            st.session_state.exchange_city = selection
+            st.session_state.exchange_source = next((c for c in local_codes if c in labels), "USD")
+            st.session_state.exchange_target = "KRW"
         left, right = st.columns(2)
-        source = left.selectbox("보내는 통화", list(labels), index=1,
+        source = left.selectbox("보내는 통화", list(labels), index=None,
                                 format_func=lambda code: f"{icons[code]} {labels[code]} ({code})", key="exchange_source")
-        target = right.selectbox("받는 통화", list(labels),
+        target = right.selectbox("받는 통화", list(labels), index=None,
                                  format_func=lambda code: f"{icons[code]} {labels[code]} ({code})", key="exchange_target")
         amount = st.number_input("환산 금액 (선택한 통화 1단위 기준)", min_value=0.0, max_value=1e12,
                                  value=100.0, step=10.0, key="exchange_amount")
@@ -280,11 +298,11 @@ def weather_error(status: int) -> None:
 
 
 def render_weather(latitude: float, longitude: float) -> None:
-    location_label = "현재 위치 기준" if has_location else "서울시청 기준"
+    location_label = escape(city_label(st.session_state.selected_city))
     st.markdown('<div id="weather" class="eyebrow">NEARBY · DAILY WEATHER</div>'
                 '<div class="card-heading weather-heading"><strong>오늘, 가볍게 나가볼까요?</strong>'
                 f'<span class="pill">📍 {location_label}</span></div>', unsafe_allow_html=True)
-    st.caption("지도의 기준 위치와 같은 지역의 날씨입니다. 위치 권한 허용 전에는 서울시청 기준입니다.")
+    st.caption("선택한 도시의 날씨와 현지 날짜 기준 예보입니다.")
     if not OPENWEATHER_API_KEY:
         st.info("상위 폴더의 .env에 OPENWEATHER_API_KEY를 설정하면 날씨가 표시됩니다.")
         return
@@ -362,13 +380,21 @@ st.markdown("""
 .block-container {max-width:1600px;padding:3rem 2rem}
 h1,h2,h3 {color:#202521;letter-spacing:-.04em}
 h1 {font-size:clamp(2rem,3.1vw,3.1rem)!important;font-weight:800!important}
-.st-key-nav,.st-key-map_card,.st-key-panel {background:#fffefa;border:1px solid #eeeae2;border-radius:28px;padding:22px;box-shadow:0 8px 30px #333d2910}
+.st-key-nav,.st-key-map_card,.st-key-panel,.st-key-recommendations {background:#fffefa;border:1px solid #eeeae2;border-radius:28px;padding:22px;box-shadow:0 8px 30px #333d2910}
+.st-key-recommendations h3 {color:#294b3b}
 .st-key-nav {padding:16px 8px;text-align:center}
 .st-key-nav nav {display:flex;flex-direction:column;align-items:center;gap:22px}
 .brand {background:#294b3b;color:white;border-radius:16px;padding:12px;font-weight:800}
 .st-key-nav a {display:flex;align-items:center;justify-content:center;width:44px;height:44px;border-radius:16px;color:#45614e}
 .st-key-nav a:hover,.st-key-nav a:first-of-type {background:#def0e5}
 .st-key-nav svg {width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:1.7}
+.trip-intro {display:flex;align-items:center;justify-content:space-between;gap:20px;background:linear-gradient(120deg,#e2f0e7,#f3f3e6);border:1px solid #dce7d9;border-radius:24px;padding:24px 28px;margin:18px 0 20px}
+.trip-label {font-size:12px;font-weight:600;color:#526b58}
+.trip-intro h2 {font-size:clamp(22px,2.3vw,30px);color:#294b3b;margin:6px 0;padding:0;overflow-wrap:anywhere}
+.trip-intro p {font-size:14px;color:#526356;margin:0;line-height:1.7}
+.trip-link {flex-shrink:0;color:#294b3b!important;background:#fffefa;border:1px solid #dce7d9;border-radius:24px;padding:10px 16px;font-size:13px;font-weight:600;text-decoration:none!important}
+.trip-link:hover {background:#f1f7ed}
+@media(max-width:600px) {.trip-intro {align-items:flex-start;flex-direction:column;padding:20px;gap:16px}}
 .eyebrow {color:#65816e;font-size:12px;letter-spacing:.17em;font-weight:700;margin-bottom:12px}
 .st-key-categories button {border:0;border-radius:24px;min-height:48px;color:#26382c}
 .st-key-categories [data-testid="stColumn"]:nth-child(1) button {background:#def0e5}
@@ -469,13 +495,30 @@ a:focus-visible {outline:3px solid #52775e;outline-offset:3px}
 
 from html import escape
 
-location = get_geolocation(component_key="current_location")
-has_location = bool(location and location.get("coords"))
-if has_location:
-    latitude = float(location["coords"]["latitude"])
-    longitude = float(location["coords"]["longitude"])
-else:
-    latitude, longitude = DEFAULT_LOCATION["lat"], DEFAULT_LOCATION["lon"]
+st.session_state.setdefault("selected_city", dict(CITY_PRESETS[0]))
+st.session_state.setdefault("city_candidates", [])
+selected_city = st.session_state.selected_city
+latitude, longitude = selected_city["latitude"], selected_city["longitude"]
+has_location = False
+
+
+def select_city(city):
+    st.session_state.selected_city = dict(city)
+    st.session_state.places = []
+    st.session_state.search_context = None
+    st.session_state.search_message = ""
+    st.session_state.search_term = ""
+    st.session_state.city_candidates = []
+
+
+def nearby_places(term, radius):
+    if st.session_state.selected_city["country_code"] == "KR":
+        if not KAKAO_REST_API_KEY:
+            raise ValueError("국내 장소 검색에 필요한 카카오 API 키가 설정되지 않았습니다.")
+        return search_places(term, latitude, longitude, radius)
+    if term not in ("카페", "맛집", "편의점", "약국"):
+        raise ValueError("해외 장소는 카페·맛집·편의점·약국 카테고리로 검색해 주세요.")
+    return open_places(latitude, longitude, radius, term)
 
 for key, value in {"places": [], "search_term": "", "search_radius": 2000,
                    "search_context": None, "search_message": ""}.items():
@@ -489,11 +532,8 @@ def run_search(term: str, radius: int) -> None:
         return
     st.session_state.places = []
     st.session_state.search_context = None
-    if not KAKAO_REST_API_KEY:
-        st.session_state.search_message = "장소 검색을 사용하려면 .env에 KAKAO_REST_API_KEY를 설정해 주세요."
-        return
     try:
-        st.session_state.places = search_places(term.strip(), latitude, longitude, radius)
+        st.session_state.places = nearby_places(term.strip(), radius)
         st.session_state.search_context = (latitude, longitude, term.strip(), radius)
         if not st.session_state.places:
             st.session_state.search_message = "검색 결과가 없습니다. 검색어나 반경을 바꿔 보세요."
@@ -502,6 +542,8 @@ def run_search(term: str, radius: int) -> None:
         st.session_state.search_message = f"검색에 실패했습니다. API 키와 권한을 확인해 주세요. (HTTP {status})"
     except requests.RequestException:
         st.session_state.search_message = "검색 서비스에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요."
+    except ValueError as exc:
+        st.session_state.search_message = str(exc)
 
 
 context = st.session_state.search_context
@@ -519,9 +561,17 @@ with nav_col:
 
 with main_col:
     with st.container(key="main"):
-        st.markdown('<div id="explore" class="eyebrow">NEARBY · EVERYDAY DISCOVERIES</div>', unsafe_allow_html=True)
-        st.title("내 주변 장소를 찾아보세요")
-        st.caption("가까운 곳에서 발견하는 새로운 일상. 오늘은 어디로 가볼까요?")
+        st.markdown('<div id="explore" class="eyebrow">NEARBY · YOUR LITTLE CITY GUIDE</div>', unsafe_allow_html=True)
+        st.title("낯선 도시에서, 나다운 하루")
+        st.caption("커피 한 잔부터 오늘의 날씨까지, 여행에 필요한 정보를 한곳에서 만나보세요.")
+        st.markdown(
+            '<section class="trip-intro" aria-label="선택한 여행지">'
+            '<div><span class="trip-label">지금 둘러보는 여행지</span>'
+            f'<h2>{escape(city_label(selected_city))}</h2>'
+            '<p>도시를 고르고, 마음에 드는 장소를 찾아 가볍게 떠나보세요.</p></div>'
+            '<a class="trip-link" href="#map-view">여행 지도 보기 ↗</a></section>',
+            unsafe_allow_html=True)
+        st.caption("어떤 곳을 찾으세요? 카테고리를 누르면 주변 장소가 지도에 표시돼요.")
         with st.container(key="categories"):
             for col, label, icon in zip(st.columns(4), ["카페", "맛집", "편의점", "약국"],
                                        [":material/local_cafe:", ":material/restaurant:", ":material/storefront:", ":material/local_pharmacy:"]):
@@ -529,6 +579,22 @@ with main_col:
                     st.session_state.search_term = label
                     run_search(label, st.session_state.search_radius)
         map_slot = st.empty()
+        with st.container(key="recommendations"):
+            st.markdown('<div class="eyebrow">NEARBY · LOCAL FINDS</div>', unsafe_allow_html=True)
+            st.subheader("여행 중 쉬어갈 곳, 든든한 한 끼")
+            st.caption("선택한 도시 중심에서 가까운 장소를 추천해요. 평점 순위가 아닌 거리순이며, 방문 전 영업 여부를 확인해 주세요.")
+            for recommendation_col, category, heading in zip(st.columns(2), ["카페", "맛집"], ["☕ 추천 카페", "🍽️ 추천 맛집"]):
+                with recommendation_col:
+                    st.markdown(f"### {heading}")
+                    try:
+                        recommendations = nearby_places(category, st.session_state.search_radius)
+                        if recommendations:
+                            st.markdown('<div>' + ''.join(place_card(p, i) for i, p in enumerate(recommendations[:3], 1)) + '</div>', unsafe_allow_html=True)
+                        else:
+                            st.info("이 반경에 등록된 장소가 없습니다. 검색 반경을 넓혀 보세요.")
+                    except (requests.RequestException, ValueError, KeyError, TypeError):
+                        st.info("추천 장소를 불러오지 못했습니다. API 설정을 확인하거나 잠시 후 다시 시도해 주세요.")
+            st.caption("장소 제공: Kakao Local (한국) · © OpenStreetMap contributors (해외)")
         with st.container(key="weather_card"):
             render_weather(latitude, longitude)
         with st.container(key="exchange_card"):
@@ -536,7 +602,30 @@ with main_col:
 
 with panel_col:
     with st.container(key="panel"):
-        st.markdown("### 어디를 찾고 계세요?")
+        st.markdown("### 이번엔 어디로 떠날까요?")
+        with st.form("city_search"):
+            city_query = st.text_input("도시 검색", placeholder="도시 이름을 입력하세요", key="city_query")
+            city_submitted = st.form_submit_button("도시 찾아보기", use_container_width=True, type="primary")
+        st.caption("예: 도쿄, 파리, 런던, 뉴욕, 상파울로 등")
+        for row in (CITY_PRESETS[1:4], CITY_PRESETS[4:] + CITY_PRESETS[:1]):
+            for col, city in zip(st.columns(3), row):
+                col.button(city["name"], key=f"city_{city['country_code']}", on_click=select_city, args=(city,), use_container_width=True)
+        if city_submitted:
+            try:
+                with st.spinner("도시를 찾고 있어요..."):
+                    candidates = search_cities(city_query)
+                st.session_state.city_candidates = candidates
+                if len(candidates) == 1:
+                    select_city(candidates[0])
+                    st.rerun()
+                if not candidates:
+                    st.info("도시를 찾지 못했어요. 영문 이름으로도 검색해 보세요.")
+            except (requests.RequestException, ValueError, KeyError):
+                st.session_state.city_candidates = []
+                st.warning("도시 검색에 연결하지 못했습니다. 아래 예시 도시를 선택하거나 다시 시도해 주세요.")
+        for candidate in st.session_state.city_candidates:
+            st.button(city_label(candidate), key=f"select_{city_key(candidate)}", on_click=select_city, args=(candidate,), use_container_width=True)
+        st.divider()
         st.caption("취향에 맞는 장소를 가까운 순서로")
         with st.form("place_search"):
             query = st.text_input("검색어", key="search_term", placeholder="장소 이름이나 키워드를 입력하세요")
@@ -546,11 +635,16 @@ with panel_col:
         if submitted:
             with st.spinner("가까운 장소를 찾고 있어요..."):
                 run_search(query, radius)
+            st.rerun()
         if st.session_state.search_message:
             st.warning(st.session_state.search_message)
-        elif not KAKAO_REST_API_KEY:
+        elif selected_city["country_code"] == "KR" and not KAKAO_REST_API_KEY:
             st.info("장소 검색은 .env의 KAKAO_REST_API_KEY 설정 후 사용할 수 있습니다.")
-        render_api_status()
+        if selected_city["country_code"] == "KR":
+            with st.expander("장소 서비스 연결 상태"):
+                render_api_status()
+        else:
+            st.caption("해외 지도·장소: OpenStreetMap · 카테고리 검색 지원")
         places = st.session_state.places
         st.markdown(f'<div id="search-results" class="card-heading"><strong>검색 결과</strong><span class="pill">{len(places)}곳</span></div>', unsafe_allow_html=True)
         context = st.session_state.search_context
@@ -568,16 +662,16 @@ with panel_col:
                 url = place.get("place_url", "")
                 if not url.startswith(("https://", "http://")):
                     url = "https://map.kakao.com"
-                cards.append(f'''<article class="result"><div class="card-heading"><strong>{index:02d} · {name}</strong><span>{distance_text}</span></div><p>{category}<br>{address}{"<br>" + phone if phone else ""}</p><a href="{escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">카카오맵에서 보기 ↗</a></article>''')
+                cards.append(place_card(place, index))
             st.markdown('<div>' + ''.join(cards) + '</div>', unsafe_allow_html=True)
         else:
-            st.markdown('<div class="empty">가까운 곳의 새로운 발견<br><small>카테고리를 누르거나 검색어를 입력해 보세요.</small></div>', unsafe_allow_html=True)
+            st.markdown('<div class="empty">여행의 첫 장소를 찾아보세요<br><small>카페·맛집 카테고리를 누르거나<br>궁금한 장소를 검색해 보세요.</small></div>', unsafe_allow_html=True)
 
 with map_slot.container():
     with st.container(key="map_card"):
-        location_label = "현재 위치 기준" if has_location else "서울시청 기준"
-        st.markdown(f'<div id="map-view" class="card-heading"><strong>우리 동네 둘러보기</strong><span class="pill">◎ {location_label}</span></div>', unsafe_allow_html=True)
-        st.caption("현재 위치와 검색한 장소를 함께 확인하세요." if has_location else "위치 권한을 허용하면 내 주변 지도로 이동합니다. 허용 전에는 서울시청을 표시합니다.")
+        location_label = escape(city_label(selected_city))
+        st.markdown(f'<div id="map-view" class="card-heading"><strong>여행지 한눈에 보기</strong><span class="pill">◎ {location_label}</span></div>', unsafe_allow_html=True)
+        st.caption("선택한 도시 중심과 주변 장소를 함께 확인하세요.")
         st_folium(make_map(latitude, longitude, st.session_state.places), height=600,
                   use_container_width=True, returned_objects=[])
-        st.caption("빨간 마커 · 기준 위치　 /　 파란 마커 · 검색한 장소")
+        st.caption("빨간 마커 · 도시 중심　 /　 파란 마커 · 검색한 장소")
